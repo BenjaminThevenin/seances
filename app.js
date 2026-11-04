@@ -13,6 +13,9 @@ const KEY = 'sportapp.v1';
 const DEFAULTS = {
   settings: { sound: true, voice: true, prep: 5, goal: 100 },
   quick: { work: 30, rest: 15, rounds: 8 },
+  chronoMode: 'simple', // simple | interval | tabata
+  simple: { dur: 90 },
+  tabata: { url: 'https://www.youtube.com/watch?v=nMqQDB29wG8', blocks: 1, between: 60, offset: 10, beeps: false },
   pushup: { series: 4, sub: 3, work: 40, subRest: 20, rest: 90 },
   exercises: [
     { id: 'gainage', name: 'Gainage', work: 45, rest: 15, rounds: 4 },
@@ -33,6 +36,8 @@ function load() {
         ...base, ...raw,
         settings: { ...base.settings, ...raw.settings },
         quick: { ...base.quick, ...raw.quick },
+        simple: { ...base.simple, ...raw.simple },
+        tabata: { ...base.tabata, ...raw.tabata },
         pushup: { ...base.pushup, ...raw.pushup },
       };
     }
@@ -132,7 +137,10 @@ const LIMITS = {
   'pushup.series': [1, 20], 'pushup.sub': [1, 10], 'pushup.work': [5, 600],
   'pushup.subRest': [0, 600], 'pushup.rest': [0, 900],
   'settings.prep': [0, 30], 'settings.goal': [10, 5000],
+  'simple.dur': [5, 3600],
+  'tabata.blocks': [1, 10], 'tabata.between': [0, 600], 'tabata.offset': [0, 120],
 };
+const showVal = (kind, v) => kind === 'time' ? fmt(v) : kind === 'sec' ? `${v} s` : v;
 let draft = null; // exercice en cours d'édition
 
 function resolve(path) {
@@ -165,7 +173,7 @@ function stepper(path, label, kind = 'int', hint = '', cls = '') {
     <span class="field-label">${label}${hint ? `<small>${hint}</small>` : ''}</span>
     <div class="stepper" data-path="${path}" data-kind="${kind}">
       <button class="step" data-dir="-1" aria-label="Moins">−</button>
-      <output>${kind === 'time' ? fmt(v) : v}</output>
+      <output>${showVal(kind, v)}</output>
       <button class="step" data-dir="1" aria-label="Plus">+</button>
     </div></div>`;
 }
@@ -182,7 +190,7 @@ document.addEventListener('pointerdown', e => {
   const apply = () => {
     if (!stepValue(path, kind, dir)) return;
     const v = getPath(path);
-    st.querySelector('output').textContent = kind === 'time' ? fmt(v) : v;
+    st.querySelector('output').textContent = showVal(kind, v);
     if (!path.startsWith('draft')) save();
     refreshSummaries();
   };
@@ -354,6 +362,9 @@ function finishRun(completed) {
 
 function closeRun() {
   if (run) clearInterval(run.timer);
+  if (run?.music) yt.player?.pauseVideo();
+  document.body.classList.remove('tabata-run');
+  $('#run').classList.remove('tabata');
   releaseAwake();
   if (run?.session && run.session.sets.length === 0) removeSession(run.session.id);
   run = null;
@@ -419,6 +430,358 @@ function validateReps() {
   db.lastReps = repsVal;
   save(true);
   showRepsPanel();
+}
+
+/* =========================================================
+   Chrono simple : compte à rebours puis temps négatif
+   ========================================================= */
+let simple = null; // { end, state: 'run' | 'over' | 'stopped', frozen, laps, n, timer }
+
+function simpleOpen() {
+  unlockAudio();
+  simple = { laps: [], n: 0, state: 'stopped', frozen: 0, timer: setInterval(simpleTick, 100) };
+  $('#simple').hidden = false;
+  simpleRestart();
+}
+function simpleLap(now) {
+  if (!simple || simple.state === 'stopped') return;
+  simple.n++;
+  simple.laps.unshift({ n: simple.n, target: simple.target, left: (simple.end - now) / 1000 });
+  simple.laps = simple.laps.slice(0, 6);
+}
+function simpleRestart() {
+  const now = Date.now();
+  simpleLap(now);
+  simple.target = db.simple.dur;
+  simple.end = now + simple.target * 1000;
+  simple.state = 'run';
+  simple.lastBeep = null;
+  simple.overBeeps = 0;
+  keepAwake();
+  sfx.work();
+  simpleRender(now);
+}
+function simpleStop() {
+  if (!simple || simple.state === 'stopped') return;
+  const now = Date.now();
+  simple.frozen = (simple.end - now) / 1000;
+  simpleLap(now);
+  simple.state = 'stopped';
+  releaseAwake();
+  simpleRender(now);
+}
+function simpleClose() {
+  if (!simple) return;
+  clearInterval(simple.timer);
+  simple = null;
+  releaseAwake();
+  $('#simple').hidden = true;
+}
+function simpleAdjust(delta) {
+  db.simple.dur = clamp(db.simple.dur + delta, ...LIMITS['simple.dur']);
+  save();
+  if (simple && simple.state !== 'stopped') {
+    const d = db.simple.dur - simple.target;
+    simple.target = db.simple.dur;
+    simple.end += d * 1000;
+    if (simple.end > Date.now()) simple.state = 'run';
+  }
+  simpleRender(Date.now());
+}
+function simpleTick() {
+  if (!simple || simple.state === 'stopped') return;
+  const now = Date.now();
+  const left = (simple.end - now) / 1000;
+  if (left > 0) {
+    const rem = Math.ceil(left);
+    if (rem <= 3 && rem !== simple.lastBeep) { simple.lastBeep = rem; sfx.count(); }
+  } else {
+    if (simple.state === 'run') { simple.state = 'over'; sfx.done(); say('Temps'); }
+    // petit rappel toutes les 30 s de dépassement
+    const k = Math.floor(-left / 30);
+    if (k > simple.overBeeps) { simple.overBeeps = k; tone(880, 0.12); tone(880, 0.12, 0.18); }
+  }
+  simpleRender(now);
+}
+const fmtSigned = sec => sec < 0 ? `−${fmt(Math.floor(-sec))}` : fmt(Math.ceil(sec));
+function simpleRender(now) {
+  const el = $('#simple');
+  const left = simple.state === 'stopped' ? simple.frozen : (simple.end - now) / 1000;
+  const over = left <= 0;
+  el.dataset.phase = simple.state === 'stopped' ? 'stopped' : over ? 'over' : 'run';
+  $('#simple-label').textContent = simple.state === 'stopped' ? 'Arrêté' : over ? 'Dépassement' : 'Chrono';
+  $('#simple-time').textContent = fmtSigned(left);
+  $('#simple-target').textContent = `Objectif ${fmt(simple.target)}`;
+  $('#simple-ring').style.strokeDashoffset = over ? 0 : RING * (1 - left / simple.target);
+  $('#simple-stop').style.visibility = simple.state === 'stopped' ? 'hidden' : '';
+  $('#simple-laps').innerHTML = simple.laps.map(l => `
+    <li><span>#${l.n} · ${fmt(l.target)}</span><b class="${l.left < 0 ? 'neg' : ''}">${fmtSigned(l.left)}</b></li>`).join('');
+}
+
+/* =========================================================
+   Tabata en musique (lecteur YouTube)
+   Le chrono suit la position de la vidéo : il reste calé
+   même si la vidéo charge, fait une pause ou affiche une pub.
+   ========================================================= */
+const TB = { work: 20, rest: 10, rounds: 8 };
+const TB_BLOCK = TB.rounds * (TB.work + TB.rest) - TB.rest; // 230 s, du 1er effort à la fin du dernier
+
+function youtubeId(url) {
+  const s = String(url || '').trim();
+  if (/^[\w-]{11}$/.test(s)) return s;
+  const m = s.match(/(?:v=|youtu\.be\/|\/embed\/|\/shorts\/|\/live\/)([\w-]{11})/);
+  return m ? m[1] : null;
+}
+function tabataDuration() {
+  const c = db.tabata;
+  return c.blocks * (c.offset + TB_BLOCK) + (c.blocks - 1) * c.between;
+}
+
+const yt = { player: null, vid: null, ready: false, loading: null };
+function loadYouTubeApi() {
+  if (window.YT?.Player) return Promise.resolve();
+  if (yt.loading) return yt.loading;
+  yt.loading = new Promise((res, rej) => {
+    const prev = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => { prev?.(); res(); };
+    const s = document.createElement('script');
+    s.src = 'https://www.youtube.com/iframe_api';
+    s.onerror = () => { yt.loading = null; s.remove(); rej(new Error('offline')); };
+    document.head.appendChild(s);
+  });
+  return yt.loading;
+}
+async function ensurePlayer(vid) {
+  await loadYouTubeApi();
+  if (yt.player && yt.ready) {
+    if (yt.vid !== vid) { yt.player.cueVideoById(vid); yt.vid = vid; }
+    return yt.player;
+  }
+  if (yt.player) return yt.pending;
+  yt.pending = new Promise(res => {
+    yt.player = new YT.Player('yt', {
+      videoId: vid, width: '100%', height: '100%',
+      playerVars: { playsinline: 1, rel: 0, modestbranding: 1 },
+      events: {
+        onReady: () => { yt.ready = true; yt.vid = vid; res(yt.player); },
+        onStateChange: e => tabataPlayerState(e.data),
+        onError: () => tabataFallback('Vidéo illisible'),
+      },
+    });
+  });
+  return yt.pending;
+}
+
+function startTabata() {
+  const vid = youtubeId(db.tabata.url);
+  if (!vid) return toast('Lien YouTube invalide');
+  unlockAudio();
+  run = { kind: 'tabata', music: true, title: 'Tabata', block: 1, blocks: db.tabata.blocks, mode: 'wait', startedAt: Date.now(), pausedMs: 0, worksDone: 0, paused: false, finished: false, lastKey: null, lastBeep: null };
+  const el = $('#run');
+  el.hidden = false;
+  el.classList.remove('paused');
+  el.classList.add('tabata');
+  document.body.classList.add('tabata-run');
+  $('#run-done').hidden = true;
+  $('#reps-panel').hidden = true;
+  $('#run-title').textContent = 'Tabata';
+  keepAwake();
+  run.timer = setInterval(tabataTick, 100);
+  if (yt.ready && yt.vid === vid) { yt.player.seekTo(0, true); yt.player.playVideo(); }
+  else ensurePlayer(vid).then(p => { if (run?.music && run.mode === 'wait') { p.seekTo(0, true); p.playVideo(); } }).catch(() => tabataFallback('Pas de connexion'));
+  tabataRender(Date.now());
+}
+
+// Sans musique (hors ligne, vidéo bloquée…) : même séance avec le chrono normal.
+function tabataFallback(reason) {
+  if (!run?.music || run.finished) return;
+  clearInterval(run.timer);
+  yt.player?.pauseVideo?.();
+  document.body.classList.remove('tabata-run');
+  $('#run').classList.remove('tabata');
+  const c = db.tabata;
+  const phases = [];
+  if (db.settings.prep > 0) phases.push({ type: 'prep', dur: db.settings.prep, label: 'Prêt' });
+  for (let b = 1; b <= c.blocks; b++) {
+    for (let r = 1; r <= TB.rounds; r++) {
+      const round = c.blocks > 1 ? `Tabata ${b}/${c.blocks} · ${r}/${TB.rounds}` : `${r} / ${TB.rounds}`;
+      phases.push({ type: 'work', dur: TB.work, label: 'Effort', round, speak: r === 1 ? 'Go' : undefined });
+      if (r < TB.rounds) phases.push({ type: 'rest', dur: TB.rest, label: 'Repos', round });
+    }
+    if (b < c.blocks && c.between > 0) phases.push({ type: 'rest', dur: c.between, label: 'Repos', round: `Tabata ${b}/${c.blocks}` });
+  }
+  run = null;
+  toast(`${reason} : tabata sans musique`);
+  startRun({ title: 'Tabata', kind: 'tabata', phases });
+}
+
+function tabataPlayerState(s) {
+  if (!run?.music || run.finished || !window.YT) return;
+  const S = YT.PlayerState;
+  if (s === S.PLAYING) {
+    if (run.mode === 'wait') { run.mode = 'media'; run.guardUntil = Date.now() + 1000; run.lastKey = null; }
+    if (run.mode === 'media' && run.paused) { run.paused = false; run.pausedMs += Date.now() - run.pauseAt; }
+  } else if (s === S.PAUSED && run.mode === 'media' && !run.paused) {
+    run.paused = true;
+    run.pauseAt = Date.now();
+  } else if (s === S.ENDED && run.mode === 'media') {
+    tabataBlockEnd();
+  }
+  $('#run').classList.toggle('paused', run.paused);
+  tabataRender(Date.now());
+}
+
+// Où en est-on d'après la position t (s) dans la vidéo ?
+function tabataPhase(t) {
+  const o = db.tabata.offset, cyc = TB.work + TB.rest;
+  if (t < o) return { key: 'intro', type: 'prep', label: 'Intro', left: o - t, dur: o || 1, k: -1 };
+  const u = t - o, k = Math.floor(u / cyc), w = u - k * cyc;
+  if (u >= TB_BLOCK) return { done: true };
+  const work = w < TB.work;
+  return { key: `${k}${work ? 'w' : 'r'}`, type: work ? 'work' : 'rest', label: work ? 'Effort' : 'Repos', left: work ? TB.work - w : cyc - w, dur: work ? TB.work : TB.rest, k };
+}
+
+function tabataTick() {
+  if (!run?.music || run.finished) return;
+  const now = Date.now();
+  if (run.mode === 'between') {
+    if (!run.paused && now >= run.betweenEnd) return tabataNextBlock();
+    const rem = Math.ceil((run.betweenEnd - now) / 1000);
+    if (!run.paused && rem <= 3 && rem !== run.lastBeep) { run.lastBeep = rem; sfx.count(); }
+  } else if (run.mode === 'media' && yt.player) {
+    const ph = tabataPhase(yt.player.getCurrentTime() || 0);
+    if (ph.done) { if (now > run.guardUntil) tabataBlockEnd(); return; }
+    if (ph.key !== run.lastKey) {
+      if (run.lastKey !== null && db.tabata.beeps) { if (ph.type === 'work') sfx.work(); else if (ph.type === 'rest') sfx.rest(); }
+      run.lastKey = ph.key;
+      run.lastBeep = null;
+    }
+    const rem = Math.ceil(ph.left);
+    if (db.tabata.beeps && !run.paused && rem <= 3 && rem !== run.lastBeep) { run.lastBeep = rem; sfx.count(); }
+  }
+  tabataRender(now);
+}
+
+function tabataBlockEnd() {
+  if (run.mode !== 'media') return;
+  run.worksDone += TB.rounds;
+  if (run.block >= run.blocks) { yt.player?.pauseVideo(); return finishTabata(true); }
+  if (db.tabata.between > 0) {
+    run.mode = 'between';
+    run.betweenEnd = Date.now() + db.tabata.between * 1000;
+    run.lastBeep = null;
+    yt.player?.pauseVideo();
+    sfx.rest();
+    say('Repos');
+    tabataRender(Date.now());
+  } else tabataNextBlock();
+}
+function tabataNextBlock() {
+  run.block++;
+  run.mode = 'wait';
+  run.paused = false;
+  $('#run').classList.remove('paused');
+  yt.player.seekTo(0, true);
+  yt.player.playVideo();
+  tabataRender(Date.now());
+}
+
+function finishTabata(completed) {
+  if (!run || run.finished) return;
+  if (!completed && run.mode === 'media' && yt.player) {
+    // efforts terminés dans le tabata en cours
+    const u = (yt.player.getCurrentTime() || 0) - db.tabata.offset;
+    run.worksDone += clamp(Math.floor((u + TB.rest) / (TB.work + TB.rest)), 0, TB.rounds);
+  }
+  clearInterval(run.timer);
+  yt.player?.pauseVideo();
+  document.body.classList.remove('tabata-run');
+  run.finished = true;
+  releaseAwake();
+  const now = Date.now();
+  run.elapsed = (now - run.startedAt - run.pausedMs - (run.paused ? now - run.pauseAt : 0)) / 1000;
+  if (completed) { sfx.done(); say('Terminé, bravo'); }
+  if (run.worksDone > 0) {
+    db.history.unshift({ ts: run.startedAt, name: 'Tabata', kind: 'tabata', rounds: run.worksDone, duration: Math.round(run.elapsed) });
+    db.history = db.history.slice(0, 300);
+    save(true);
+  }
+  run.completed = completed;
+  renderDone();
+}
+
+// want : true = mettre en pause, false = reprendre, absent = basculer
+function tabataPauseToggle(want = run.mode !== 'wait' && !run.paused) {
+  if (run.mode === 'between') {
+    const now = Date.now();
+    if (want === run.paused) return;
+    if (run.paused) { run.betweenEnd += now - run.pauseAt; run.pausedMs += now - run.pauseAt; run.paused = false; }
+    else { run.paused = true; run.pauseAt = now; }
+    $('#run').classList.toggle('paused', run.paused);
+    tabataRender(now);
+  } else if (yt.player) {
+    // l'état réel est mis à jour par le lecteur (tabataPlayerState)
+    if (want) yt.player.pauseVideo(); else yt.player.playVideo();
+  }
+}
+function tabataSkip() {
+  if (run.mode === 'between') { run.betweenEnd = Date.now(); return tabataTick(); }
+  if (run.mode !== 'media' || !yt.player) return;
+  const t = yt.player.getCurrentTime() || 0;
+  const ph = tabataPhase(t);
+  if (!ph.done) yt.player.seekTo(t + ph.left + 0.05, true);
+}
+function tabataSync() {
+  if (run.mode !== 'media' || !yt.player) return toast('Lance d\'abord la musique');
+  const t = yt.player.getCurrentTime() || 0;
+  const ph = tabataPhase(t);
+  if (t > 60 || ph.k > 0) return toast('Touche « Caler » quand le 1er effort commence');
+  db.tabata.offset = Math.round(t);
+  save(true);
+  run.lastKey = null;
+  toast(`Intro calée à ${db.tabata.offset} s`);
+  tabataTick();
+}
+
+function tabataRender(now) {
+  const c = db.tabata;
+  const blk = run.blocks > 1 ? `Tabata ${run.block}/${run.blocks}` : '';
+  let type = 'prep', label, left = 0, dur = 1, round = blk, next = '';
+  if (run.mode === 'wait') {
+    label = 'Musique';
+    round = 'Si elle ne démarre pas, touche la vidéo';
+    left = c.offset;
+    dur = c.offset || 1;
+  } else if (run.mode === 'between') {
+    type = 'rest';
+    label = 'Repos';
+    left = Math.max(0, (run.betweenEnd - (run.paused ? run.pauseAt : now)) / 1000);
+    dur = c.between;
+    next = `Ensuite : Tabata ${run.block + 1}`;
+  } else {
+    const ph = tabataPhase(yt.player?.getCurrentTime() || 0);
+    if (ph.done) return;
+    ({ type, label, left, dur } = ph);
+    if (ph.k >= 0) round = `${blk ? blk + ' · ' : ''}${ph.k + 1} / ${TB.rounds}`;
+    const lastWork = ph.k === TB.rounds - 1 && type === 'work';
+    next = type === 'rest' || type === 'prep' ? `Ensuite : Effort ${fmt(TB.work)}`
+      : lastWork ? (run.block < run.blocks ? `Ensuite : Repos ${fmt(c.between)}` : 'Dernier effort !')
+        : `Ensuite : Repos ${fmt(TB.rest)}`;
+  }
+  const el = $('#run');
+  el.dataset.phase = type;
+  $('#run-phase').textContent = run.paused ? 'Pause' : label;
+  $('#run-time').textContent = run.mode === 'wait' ? '—' : fmt(Math.ceil(left));
+  $('#run-round').textContent = round;
+  $('#run-next').textContent = next;
+  $('#ring').style.strokeDashoffset = RING * (1 - clamp(left / dur, 0, 1));
+  // temps restant total
+  let total;
+  const later = (run.blocks - run.block) * (c.between + c.offset + TB_BLOCK);
+  if (run.mode === 'between') total = left + later - c.between;
+  else if (run.mode === 'media') total = Math.max(0, c.offset + TB_BLOCK - (yt.player?.getCurrentTime() || 0)) + later;
+  else total = c.offset + TB_BLOCK + later;
+  $('#run-total').textContent = `Reste ${fmt(total)}`;
 }
 
 /* =========================================================
@@ -541,17 +904,9 @@ const ICON_X = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strok
 
 const views = {
   timer() {
-    const q = db.quick;
-    return `
-      <section class="card">
-        ${stepper('quick.work', 'Effort', 'time')}
-        ${stepper('quick.rest', 'Repos', 'time')}
-        ${stepper('quick.rounds', 'Répétitions')}
-        <div class="summary"><span>Durée totale</span><b data-summary="quick">${fmt(planDuration(q))}</b></div>
-      </section>
-      <div class="chips">${PRESETS.map(p => `<button class="chip ${p.w === q.work && p.r === q.rest && p.n === q.rounds ? 'active' : ''}" data-action="preset" data-w="${p.w}" data-r="${p.r}" data-n="${p.n}">${p.label}</button>`).join('')}</div>
-      <button class="btn primary big" data-action="start-quick">${ICON_PLAY.replace('<svg', '<svg width="22" height="22"')} Démarrer</button>
-      <button class="btn ghost" data-action="save-quick">Enregistrer comme exercice</button>`;
+    const modes = [['simple', 'Simple'], ['interval', 'Intervalles'], ['tabata', 'Tabata']];
+    const seg = `<div class="seg">${modes.map(([k, l]) => `<button class="${db.chronoMode === k ? 'active' : ''}" data-action="chrono-mode" data-m="${k}">${l}</button>`).join('')}</div>`;
+    return seg + (db.chronoMode === 'simple' ? simpleView() : db.chronoMode === 'tabata' ? tabataView() : intervalView());
   },
 
   exercises() {
@@ -645,6 +1000,52 @@ const views = {
   },
 };
 
+const SIMPLE_PRESETS = [30, 45, 60, 90, 120, 180, 300];
+function simpleView() {
+  const d = db.simple.dur;
+  return `
+    <section class="card">
+      ${stepper('simple.dur', 'Durée', 'time')}
+    </section>
+    <div class="chips">${SIMPLE_PRESETS.map(s => `<button class="chip ${s === d ? 'active' : ''}" data-action="simple-preset" data-s="${s}">${fmt(s)}</button>`).join('')}</div>
+    <button class="btn primary big" data-action="simple-open">${ICON_PLAY.replace('<svg', '<svg width="22" height="22"')} Démarrer</button>
+    <p class="note">Une fois à zéro, le chrono continue en négatif jusqu'à ce que tu le relances ou l'arrêtes. Touche le cercle pour relancer.</p>`;
+}
+
+function tabataView() {
+  const c = db.tabata;
+  const vid = youtubeId(c.url);
+  return `
+    <section class="card yt-card">
+      ${vid ? `<img class="yt-thumb" src="https://i.ytimg.com/vi/${vid}/hqdefault.jpg" alt="">` : '<div class="yt-thumb empty">Lien invalide</div>'}
+      <input class="text-input" id="tabata-url" type="url" inputmode="url" placeholder="Lien YouTube de la musique" value="${esc(c.url)}" autocomplete="off">
+    </section>
+    <section class="card">
+      ${stepper('tabata.blocks', 'Tabatas', 'int', `${TB.rounds} × ${TB.work} s / ${TB.rest} s chacun`)}
+      ${stepper('tabata.between', 'Repos', 'time', 'entre deux tabatas', c.blocks > 1 ? '' : 'disabled')}
+      ${stepper('tabata.offset', 'Intro', 'sec', 'avant le 1er effort', 'small')}
+      <div class="field"><span class="field-label">Bips de l'app<small>La musique donne déjà le rythme</small></span><button class="toggle ${c.beeps ? 'on' : ''}" data-action="toggle" data-path="tabata.beeps" aria-label="Bips de l'app"></button></div>
+      <div class="summary"><span>Durée totale</span><b data-summary="tabata">${fmt(tabataDuration())}</b></div>
+    </section>
+    <button class="btn primary big" data-action="start-tabata">${ICON_PLAY.replace('<svg', '<svg width="22" height="22"')} Démarrer</button>
+    <p class="note">Il faut une connexion internet pour la musique. Si le chrono est décalé par rapport à la musique, touche « Caler » pendant la séance au moment où le premier effort commence : le réglage est enregistré.</p>`;
+}
+
+function intervalView() {
+  const q = db.quick;
+  return `
+      <section class="card">
+        ${stepper('quick.work', 'Effort', 'time')}
+        ${stepper('quick.rest', 'Repos', 'time')}
+        ${stepper('quick.rounds', 'Répétitions')}
+        <div class="summary"><span>Durée totale</span><b data-summary="quick">${fmt(planDuration(q))}</b></div>
+      </section>
+      <div class="chips">${PRESETS.map(p => `<button class="chip ${p.w === q.work && p.r === q.rest && p.n === q.rounds ? 'active' : ''}" data-action="preset" data-w="${p.w}" data-r="${p.r}" data-n="${p.n}">${p.label}</button>`).join('')}</div>
+      <button class="btn primary big" data-action="start-quick">${ICON_PLAY.replace('<svg', '<svg width="22" height="22"')} Démarrer</button>
+      <button class="btn ghost" data-action="save-quick">Enregistrer comme exercice</button>`;
+}
+
+
 function setList(sessions, showSessionHeader = false) {
   return sessions.map(s => {
     const total = s.sets.reduce((a, x) => a + x.reps, 0);
@@ -661,6 +1062,11 @@ function render() {
   $$('.tab').forEach(t => t.classList.toggle('active', t.dataset.view === current));
   $('#title').textContent = TITLES[current];
   $('#view').innerHTML = views[current]();
+  // prépare le lecteur à l'avance pour que la musique parte dès « Démarrer »
+  if (current === 'timer' && db.chronoMode === 'tabata') {
+    const vid = youtubeId(db.tabata.url);
+    if (vid) ensurePlayer(vid).catch(() => { });
+  }
 }
 
 function refreshSummaries() {
@@ -670,12 +1076,16 @@ function refreshSummaries() {
     else if (k === 'pushup') el.textContent = `≈ ${fmtLong(pushupDuration(db.pushup))}`;
     else if (k === 'pushup-count') el.textContent = `${db.pushup.series * db.pushup.sub} efforts`;
     else if (k === 'draft' && draft) el.textContent = fmt(planDuration(draft));
+    else if (k === 'tabata') el.textContent = fmt(tabataDuration());
   });
   const sr = $('[data-field="pushup.subRest"]');
   if (sr) sr.classList.toggle('disabled', db.pushup.sub <= 1);
+  const tb = $('[data-field="tabata.between"]');
+  if (tb) tb.classList.toggle('disabled', db.tabata.blocks <= 1);
   if (current === 'timer') {
     const q = db.quick;
-    $$('.chip').forEach(c => c.classList.toggle('active', +c.dataset.w === q.work && +c.dataset.r === q.rest && +c.dataset.n === q.rounds));
+    $$('.chip[data-action="preset"]').forEach(c => c.classList.toggle('active', +c.dataset.w === q.work && +c.dataset.r === q.rest && +c.dataset.n === q.rounds));
+    $$('.chip[data-action="simple-preset"]').forEach(c => c.classList.toggle('active', +c.dataset.s === db.simple.dur));
   }
 }
 
@@ -822,7 +1232,21 @@ const actions = {
     render();
   },
 
-  'run-pause': () => togglePause(),
+  'chrono-mode': el => { db.chronoMode = el.dataset.m; save(); render(); },
+  'simple-preset': el => { db.simple.dur = +el.dataset.s; save(); render(); },
+  'simple-open': simpleOpen,
+  'simple-restart': () => simple && simpleRestart(),
+  'simple-stop': simpleStop,
+  'simple-close': () => { simpleClose(); render(); },
+  'simple-minus': () => simpleAdjust(-15),
+  'simple-plus': () => simpleAdjust(15),
+  'start-tabata': startTabata,
+  'run-sync': () => run?.music && !run.finished && tabataSync(),
+
+  'run-pause': () => {
+    if (!run || run.finished) return;
+    if (run.music) tabataPauseToggle(); else togglePause();
+  },
   'run-plus': () => {
     if (!run || run.finished) return;
     if (run.paused) run.pausedLeft += 10000; else run.phaseEnd += 10000;
@@ -831,6 +1255,7 @@ const actions = {
   },
   'run-skip': () => {
     if (!run || run.finished) return;
+    if (run.music) return tabataSkip();
     if (run.paused) togglePause();
     nextPhase(Date.now(), true);
   },
@@ -838,11 +1263,12 @@ const actions = {
     if (!run) return;
     if (run.finished) return closeRun();
     const wasPaused = run.paused;
-    if (!wasPaused) togglePause();
+    const pause = want => run.music ? tabataPauseToggle(want) : (run.paused !== want && togglePause());
+    if (!wasPaused) pause(true);
     const ok = await ask('Arrêter la séance ?', 'Arrêter');
-    if (!run) return;
-    if (ok) finishRun(false);
-    else if (!wasPaused) togglePause();
+    if (!run || run.finished) return;
+    if (ok) run.music ? finishTabata(false) : finishRun(false);
+    else if (!wasPaused) pause(false);
   },
   'run-close': closeRun,
   'reps-adj': el => { repsVal = clamp(repsVal + Number(el.dataset.d), 0, 999); $('#reps-val').textContent = repsVal; },
@@ -900,9 +1326,18 @@ document.addEventListener('click', e => {
 /* Écran allumé : la demande saute quand l'app passe en arrière-plan */
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
-    if (run && !run.finished) { keepAwake(); tick(); }
+    if (run && !run.finished) { keepAwake(); run.music ? tabataTick() : tick(); }
+    else if (simple) { if (simple.state !== 'stopped') keepAwake(); simpleTick(); }
     else if (!run) render(); // la date a pu changer
   }
+});
+
+document.addEventListener('change', e => {
+  if (e.target.id !== 'tabata-url') return;
+  db.tabata.url = e.target.value.trim();
+  save(true);
+  if (!youtubeId(db.tabata.url)) toast('Lien YouTube non reconnu');
+  render();
 });
 
 /* Hors ligne */

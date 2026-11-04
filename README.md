@@ -4,7 +4,10 @@ Web app à installer sur l'écran d'accueil de l'iPhone. Elle s'ouvre en plein �
 
 ## Fonctionnalités
 
-- **Chrono** : effort, repos et nombre de répétitions réglables avec les boutons − / + (appui long pour aller vite), plus des préréglages (Tabata 20/10, 30/15…).
+- **Chrono**, avec trois modes :
+  - **Simple** : un compte à rebours (1:30 par défaut). Arrivé à zéro, il continue en négatif (−0:12…) jusqu'à ce que tu le relances ou l'arrêtes. Touche le cercle pour relancer, et utilise −15 / +15 pour ajuster la durée. Les dernières relances restent affichées avec leur dépassement.
+  - **Intervalles** : effort, repos et nombre de répétitions réglables avec les boutons − / + (appui long pour aller vite), plus des préréglages (Tabata 20/10, 30/15…).
+  - **Tabata** : 8 × (20 s / 10 s) sur la musique YouTube de ton choix (par défaut *Tabata song ! Smells Like Teen Spirit*). Tu peux en enchaîner plusieurs avec un repos entre chaque. Le chrono suit la vidéo : il reste calé même si elle charge ou est mise en pause. Si le début du premier effort est décalé, touche **Caler** au bon moment, une fois, et le réglage est enregistré. Il faut une connexion internet pour la musique ; sans réseau, la séance se lance sans musique.
 - **Exercices** : ta liste d'exercices, chacun avec son propre chrono. ▶ lance l'exercice, toucher la carte permet de le modifier ou de le supprimer.
 - **Pompes** : séries × sous-séries, temps par sous-série, récup entre sous-séries, repos après chaque série. Après chaque effort, l'app te demande combien de pompes tu as faites (la valeur précédente est proposée par défaut). Le total du jour est suivi avec un objectif quotidien.
 - **Stats** : graphiques sur 7 jours, 30 jours ou 12 semaines, total du jour, de la semaine (avec l'évolution par rapport à la semaine précédente), du mois et depuis le début, record sur une journée, meilleure série, moyennes, cadence (pompes par minute d'effort), jours consécutifs, historique des séances chrono.
@@ -37,5 +40,6 @@ Sur l'iPhone, ouvre ensuite `http://<IP-du-PC>:8080` dans Safari (par exemple `h
 
 - **Son en mode silencieux** : sur iOS 17 et plus, les bips passent même quand le bouton silencieux est activé. Sur les versions plus anciennes, désactive le mode silencieux.
 - **Écran verrouillé** : iOS met les web apps en pause quand l'écran est verrouillé. L'app garde l'écran allumé pendant une séance. Si tu changes d'app, le chrono rattrape le temps écoulé à ton retour, mais tu n'entends pas les bips entre-temps.
+- **Musique du tabata sur iPhone** : si elle ne démarre pas toute seule après « Démarrer », touche la vidéo une fois. iOS demande parfois ce geste. La musique s'arrête si tu verrouilles l'écran.
 - **Sauvegarde** : *Réglages → Exporter* crée un fichier JSON (que tu peux par exemple enregistrer dans Fichiers ou iCloud). *Importer* le restaure.
 - **Mise à jour de l'app** : après avoir modifié les fichiers, change `VERSION` dans `sw.js` (`seances-v2`…). L'iPhone prend la nouvelle version au deuxième lancement.

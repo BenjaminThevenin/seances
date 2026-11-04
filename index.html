@@ -67,7 +67,8 @@
       <button class="ctl" data-action="run-stop" aria-label="Arrêter">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
-      <button class="ctl" data-action="run-plus" aria-label="Ajouter 10 secondes"><b>+10</b></button>
+      <button class="ctl ctl-plus" data-action="run-plus" aria-label="Ajouter 10 secondes"><b>+10</b></button>
+      <button class="ctl ctl-sync" data-action="run-sync" aria-label="Caler le chrono sur la musique"><b>Caler</b></button>
       <button class="ctl main" data-action="run-pause" aria-label="Pause" id="btn-pause">
         <svg class="i-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
         <svg class="i-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>
@@ -96,6 +97,44 @@
     <!-- Fin de séance -->
     <div id="run-done" class="run-done" hidden></div>
   </section>
+
+  <!-- Chrono simple -->
+  <section id="simple" class="run simple" hidden data-phase="run">
+    <div class="run-top">
+      <span class="run-name">Chrono</span>
+      <span id="simple-target"></span>
+    </div>
+    <div class="run-center" data-action="simple-restart">
+      <div class="ring-wrap">
+        <svg viewBox="0 0 200 200" class="ring">
+          <circle class="ring-bg" cx="100" cy="100" r="92"/>
+          <circle class="ring-fg" id="simple-ring" cx="100" cy="100" r="92"/>
+        </svg>
+        <div class="ring-inner">
+          <div id="simple-label" class="ph-label">Chrono</div>
+          <div id="simple-time" class="ph-time">0:00</div>
+          <div class="ph-hint">Touche pour relancer</div>
+        </div>
+      </div>
+      <ul id="simple-laps" class="laps"></ul>
+    </div>
+    <div class="run-controls">
+      <button class="ctl" data-action="simple-close" aria-label="Fermer">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+      <button class="ctl" data-action="simple-minus" aria-label="Moins 15 secondes"><b>−15</b></button>
+      <button class="ctl main" data-action="simple-restart" aria-label="Relancer">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg>
+      </button>
+      <button class="ctl" data-action="simple-plus" aria-label="Plus 15 secondes"><b>+15</b></button>
+      <button class="ctl" id="simple-stop" data-action="simple-stop" aria-label="Arrêter">
+        <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+      </button>
+    </div>
+  </section>
+
+  <!-- Lecteur YouTube du tabata (hors écran tant qu'il ne joue pas) -->
+  <div id="yt-wrap" class="yt-wrap"><div id="yt"></div></div>
 
   <!-- Panneau modal générique -->
   <div id="sheet" class="sheet-backdrop" hidden data-action="sheet-backdrop">
