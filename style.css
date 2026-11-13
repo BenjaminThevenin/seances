@@ -223,10 +223,17 @@ body.tabata-run .yt-wrap {
 .run.tabata .run-center { padding-top: calc(min(64vw, 300px) * 9 / 16 + 24px); gap: 10px; }
 .run.tabata .ring-wrap { width: min(72vw, 40vh, 360px); }
 .run.tabata #run-time { font-size: clamp(56px, 20vw, 120px); }
-.yt-card { padding: 0; overflow: hidden; }
-.yt-thumb { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: cover; background: var(--surface-2); }
-.yt-thumb.empty { display: grid; place-items: center; color: var(--muted); }
-.yt-card .text-input { border-radius: 0; border: 0; border-top: 1px solid var(--line); background: var(--surface); font-size: 15px; }
+.track { display: flex; align-items: center; gap: 12px; padding: 8px 12px 8px 8px; margin: 8px 0; border-radius: 16px; background: var(--surface); border: 2px solid transparent; cursor: pointer; }
+.track.sel { border-color: var(--accent); }
+.track img { flex: none; width: 92px; aspect-ratio: 16 / 9; border-radius: 10px; object-fit: cover; background: var(--surface-2); }
+.t-main { flex: 1; min-width: 0; }
+.t-name { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.t-meta { color: var(--muted); font-size: 13px; }
+.t-dot { flex: none; width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--line); }
+.track.sel .t-dot { border: 7px solid var(--accent); }
+.add-row { display: flex; gap: 8px; align-items: center; margin: 10px 0 4px; }
+.add-row .text-input { flex: 1; min-width: 0; font-size: 15px; }
+.add-row .btn { width: auto; flex: none; padding: 0 16px; margin: 0; min-height: 48px; color: var(--accent); }
 
 .reps-panel {
   position: absolute; left: 0; right: 0; bottom: 0;

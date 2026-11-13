@@ -6,6 +6,18 @@ const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(3
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// Musiques « Tabata Songs » (8 × 20 s / 10 s, minuteur intégré à la vidéo)
+const TABATA_TRACKS = [
+  { id: 'nMqQDB29wG8', title: 'Smells Like Teen Spirit' },
+  { id: 'YhuRrLu9iRo', title: 'Seven Nation Army' },
+  { id: '7JK-MzBSBzM', title: 'Thunderstruck' },
+  { id: 'zcFNRKSEKmo', title: 'Eye of the Tiger' },
+  { id: '760TqMz-TwI', title: 'Rocky' },
+  { id: 'ahxWIeh9zbQ', title: 'Mr. Brightside' },
+  { id: 'NDMajiNZ1cU', title: 'Basket Case' },
+  { id: 'mJ2mFarJjqk', title: "I'm Shipping Up to Boston" },
+];
+
 /* =========================================================
    Stockage local
    ========================================================= */
@@ -15,7 +27,7 @@ const DEFAULTS = {
   quick: { work: 30, rest: 15, rounds: 8 },
   chronoMode: 'simple', // simple | interval | tabata
   simple: { dur: 90 },
-  tabata: { url: 'https://www.youtube.com/watch?v=nMqQDB29wG8', blocks: 1, between: 60, offset: 10, beeps: false },
+  tabata: { track: 'nMqQDB29wG8', custom: [], offsets: {}, blocks: 1, between: 60, chain: false, beeps: false },
   pushup: { series: 4, sub: 3, work: 40, subRest: 20, rest: 90 },
   exercises: [
     { id: 'gainage', name: 'Gainage', work: 45, rest: 15, rounds: 4 },
@@ -37,12 +49,26 @@ function load() {
         settings: { ...base.settings, ...raw.settings },
         quick: { ...base.quick, ...raw.quick },
         simple: { ...base.simple, ...raw.simple },
-        tabata: { ...base.tabata, ...raw.tabata },
+        tabata: migrateTabata({ ...base.tabata, ...raw.tabata }),
         pushup: { ...base.pushup, ...raw.pushup },
       };
     }
   } catch (e) { /* données corrompues : on repart des valeurs par défaut */ }
   return base;
+}
+// v1 : un seul lien (url) et une seule intro (offset) → liste de musiques
+function migrateTabata(t) {
+  if (t.url !== undefined) {
+    const id = youtubeId(t.url);
+    if (id) {
+      if (!TABATA_TRACKS.some(x => x.id === id) && !t.custom.some(x => x.id === id)) t.custom.push({ id, title: 'Ma musique' });
+      t.track = id;
+      if (t.offset !== undefined && t.offsets[id] === undefined) t.offsets[id] = t.offset;
+    }
+    delete t.url;
+    delete t.offset;
+  }
+  return t;
 }
 let db = load();
 let saveTimer = null;
@@ -138,14 +164,14 @@ const LIMITS = {
   'pushup.subRest': [0, 600], 'pushup.rest': [0, 900],
   'settings.prep': [0, 30], 'settings.goal': [10, 5000],
   'simple.dur': [5, 3600],
-  'tabata.blocks': [1, 10], 'tabata.between': [0, 600], 'tabata.offset': [0, 120],
+  'tabata.blocks': [1, 10], 'tabata.between': [0, 600],
 };
 const showVal = (kind, v) => kind === 'time' ? fmt(v) : kind === 'sec' ? `${v} s` : v;
 let draft = null; // exercice en cours d'édition
 
 function resolve(path) {
   const [root, key] = path.split('.');
-  return [root === 'draft' ? draft : db[root], key];
+  return [root === 'draft' ? draft : root === 'tbo' ? db.tabata.offsets : db[root], key];
 }
 const getPath = p => { const [o, k] = resolve(p); return o[k]; };
 function setPath(p, v) { const [o, k] = resolve(p); o[k] = v; }
@@ -156,7 +182,7 @@ function timeStep(v, dir) {
 }
 function stepValue(path, kind, dir) {
   const v = getPath(path);
-  const [min, max] = LIMITS[path] || [0, 9999];
+  const [min, max] = LIMITS[path] || (path.startsWith('tbo.') ? [0, 120] : [0, 9999]);
   let step = 1;
   if (kind === 'time') step = timeStep(v, dir);
   else if (path === 'settings.goal') step = v < 200 ? 10 : 50;
@@ -532,9 +558,25 @@ function youtubeId(url) {
   const m = s.match(/(?:v=|youtu\.be\/|\/embed\/|\/shorts\/|\/live\/)([\w-]{11})/);
   return m ? m[1] : null;
 }
+const DEFAULT_OFFSET = 10;
+const allTracks = () => [...TABATA_TRACKS, ...db.tabata.custom];
+const trackOf = id => allTracks().find(x => x.id === id) || allTracks()[0];
+const offsetOf = id => db.tabata.offsets[id] ?? DEFAULT_OFFSET;
+// musique du tabata n° b (1, 2…) : la même, ou la suivante de la liste si « enchaîner »
+function trackForBlock(b) {
+  const list = allTracks();
+  const i = Math.max(0, list.findIndex(x => x.id === db.tabata.track));
+  return db.tabata.chain ? list[(i + b - 1) % list.length] : list[i];
+}
 function tabataDuration() {
   const c = db.tabata;
-  return c.blocks * (c.offset + TB_BLOCK) + (c.blocks - 1) * c.between;
+  let total = (c.blocks - 1) * c.between;
+  for (let b = 1; b <= c.blocks; b++) total += offsetOf(trackForBlock(b).id) + TB_BLOCK;
+  return total;
+}
+function playTrack(id) {
+  if (yt.vid === id) { yt.player.seekTo(0, true); yt.player.playVideo(); }
+  else { yt.player.loadVideoById(id); yt.vid = id; }
 }
 
 const yt = { player: null, vid: null, ready: false, loading: null };
@@ -573,10 +615,10 @@ async function ensurePlayer(vid) {
 }
 
 function startTabata() {
-  const vid = youtubeId(db.tabata.url);
-  if (!vid) return toast('Lien YouTube invalide');
+  const track = trackForBlock(1);
+  const vid = track.id;
   unlockAudio();
-  run = { kind: 'tabata', music: true, title: 'Tabata', block: 1, blocks: db.tabata.blocks, mode: 'wait', startedAt: Date.now(), pausedMs: 0, worksDone: 0, paused: false, finished: false, lastKey: null, lastBeep: null };
+  run = { kind: 'tabata', music: true, title: 'Tabata', trackId: vid, block: 1, blocks: db.tabata.blocks, mode: 'wait', startedAt: Date.now(), pausedMs: 0, worksDone: 0, paused: false, finished: false, lastKey: null, lastBeep: null };
   const el = $('#run');
   el.hidden = false;
   el.classList.remove('paused');
@@ -584,11 +626,11 @@ function startTabata() {
   document.body.classList.add('tabata-run');
   $('#run-done').hidden = true;
   $('#reps-panel').hidden = true;
-  $('#run-title').textContent = 'Tabata';
+  $('#run-title').textContent = track.title;
   keepAwake();
   run.timer = setInterval(tabataTick, 100);
-  if (yt.ready && yt.vid === vid) { yt.player.seekTo(0, true); yt.player.playVideo(); }
-  else ensurePlayer(vid).then(p => { if (run?.music && run.mode === 'wait') { p.seekTo(0, true); p.playVideo(); } }).catch(() => tabataFallback('Pas de connexion'));
+  if (yt.ready) playTrack(vid);
+  else ensurePlayer(vid).then(() => { if (run?.music && run.mode === 'wait') playTrack(vid); }).catch(() => tabataFallback('Pas de connexion'));
   tabataRender(Date.now());
 }
 
@@ -633,7 +675,7 @@ function tabataPlayerState(s) {
 
 // Où en est-on d'après la position t (s) dans la vidéo ?
 function tabataPhase(t) {
-  const o = db.tabata.offset, cyc = TB.work + TB.rest;
+  const o = offsetOf(run.trackId), cyc = TB.work + TB.rest;
   if (t < o) return { key: 'intro', type: 'prep', label: 'Intro', left: o - t, dur: o || 1, k: -1 };
   const u = t - o, k = Math.floor(u / cyc), w = u - k * cyc;
   if (u >= TB_BLOCK) return { done: true };
@@ -681,8 +723,10 @@ function tabataNextBlock() {
   run.mode = 'wait';
   run.paused = false;
   $('#run').classList.remove('paused');
-  yt.player.seekTo(0, true);
-  yt.player.playVideo();
+  const track = trackForBlock(run.block);
+  run.trackId = track.id;
+  $('#run-title').textContent = track.title;
+  playTrack(track.id);
   tabataRender(Date.now());
 }
 
@@ -690,7 +734,7 @@ function finishTabata(completed) {
   if (!run || run.finished) return;
   if (!completed && run.mode === 'media' && yt.player) {
     // efforts terminés dans le tabata en cours
-    const u = (yt.player.getCurrentTime() || 0) - db.tabata.offset;
+    const u = (yt.player.getCurrentTime() || 0) - offsetOf(run.trackId);
     run.worksDone += clamp(Math.floor((u + TB.rest) / (TB.work + TB.rest)), 0, TB.rounds);
   }
   clearInterval(run.timer);
@@ -736,28 +780,29 @@ function tabataSync() {
   const t = yt.player.getCurrentTime() || 0;
   const ph = tabataPhase(t);
   if (t > 60 || ph.k > 0) return toast('Touche « Caler » quand le 1er effort commence');
-  db.tabata.offset = Math.round(t);
+  db.tabata.offsets[run.trackId] = Math.round(t);
   save(true);
   run.lastKey = null;
-  toast(`Intro calée à ${db.tabata.offset} s`);
+  toast(`Intro de « ${trackOf(run.trackId).title} » calée à ${Math.round(t)} s`);
   tabataTick();
 }
 
 function tabataRender(now) {
   const c = db.tabata;
+  const o = offsetOf(run.trackId);
   const blk = run.blocks > 1 ? `Tabata ${run.block}/${run.blocks}` : '';
   let type = 'prep', label, left = 0, dur = 1, round = blk, next = '';
   if (run.mode === 'wait') {
     label = 'Musique';
     round = 'Si elle ne démarre pas, touche la vidéo';
-    left = c.offset;
-    dur = c.offset || 1;
+    left = o;
+    dur = o || 1;
   } else if (run.mode === 'between') {
     type = 'rest';
     label = 'Repos';
     left = Math.max(0, (run.betweenEnd - (run.paused ? run.pauseAt : now)) / 1000);
     dur = c.between;
-    next = `Ensuite : Tabata ${run.block + 1}`;
+    next = `Ensuite : ${trackForBlock(run.block + 1).title}`;
   } else {
     const ph = tabataPhase(yt.player?.getCurrentTime() || 0);
     if (ph.done) return;
@@ -777,10 +822,11 @@ function tabataRender(now) {
   $('#ring').style.strokeDashoffset = RING * (1 - clamp(left / dur, 0, 1));
   // temps restant total
   let total;
-  const later = (run.blocks - run.block) * (c.between + c.offset + TB_BLOCK);
+  let later = 0;
+  for (let b = run.block + 1; b <= run.blocks; b++) later += c.between + offsetOf(trackForBlock(b).id) + TB_BLOCK;
   if (run.mode === 'between') total = left + later - c.between;
-  else if (run.mode === 'media') total = Math.max(0, c.offset + TB_BLOCK - (yt.player?.getCurrentTime() || 0)) + later;
-  else total = c.offset + TB_BLOCK + later;
+  else if (run.mode === 'media') total = Math.max(0, o + TB_BLOCK - (yt.player?.getCurrentTime() || 0)) + later;
+  else total = o + TB_BLOCK + later;
   $('#run-total').textContent = `Reste ${fmt(total)}`;
 }
 
@@ -1014,16 +1060,30 @@ function simpleView() {
 
 function tabataView() {
   const c = db.tabata;
-  const vid = youtubeId(c.url);
+  const sel = trackOf(c.track);
+  c.offsets[sel.id] ??= DEFAULT_OFFSET;
+  const custom = new Set(c.custom.map(x => x.id));
+  const tracks = allTracks().map(t => `
+    <div class="track ${t.id === sel.id ? 'sel' : ''}" data-action="tabata-track" data-id="${t.id}">
+      <img src="https://i.ytimg.com/vi/${t.id}/mqdefault.jpg" alt="" loading="lazy">
+      <div class="t-main">
+        <div class="t-name">${esc(t.title)}</div>
+        <div class="t-meta">Intro ${offsetOf(t.id)} s${c.offsets[t.id] === undefined ? '' : ' · calée'}</div>
+      </div>
+      ${custom.has(t.id) ? `<button class="del" data-action="tabata-del" data-id="${t.id}" aria-label="Retirer">${ICON_X}</button>` : '<span class="t-dot"></span>'}
+    </div>`).join('');
   return `
-    <section class="card yt-card">
-      ${vid ? `<img class="yt-thumb" src="https://i.ytimg.com/vi/${vid}/hqdefault.jpg" alt="">` : '<div class="yt-thumb empty">Lien invalide</div>'}
-      <input class="text-input" id="tabata-url" type="url" inputmode="url" placeholder="Lien YouTube de la musique" value="${esc(c.url)}" autocomplete="off">
-    </section>
+    <div class="section-title">Musique</div>
+    ${tracks}
+    <div class="add-row">
+      <input class="text-input" id="tabata-url" type="url" inputmode="url" placeholder="Coller un lien YouTube" autocomplete="off">
+      <button class="btn" data-action="tabata-add">Ajouter</button>
+    </div>
     <section class="card">
       ${stepper('tabata.blocks', 'Tabatas', 'int', `${TB.rounds} × ${TB.work} s / ${TB.rest} s chacun`)}
       ${stepper('tabata.between', 'Repos', 'time', 'entre deux tabatas', c.blocks > 1 ? '' : 'disabled')}
-      ${stepper('tabata.offset', 'Intro', 'sec', 'avant le 1er effort', 'small')}
+      <div class="field ${c.blocks > 1 ? '' : 'disabled'}" data-field="tabata.chain"><span class="field-label">Changer de musique<small>à chaque tabata, dans l'ordre de la liste</small></span><button class="toggle ${c.chain ? 'on' : ''}" data-action="toggle" data-path="tabata.chain" aria-label="Changer de musique à chaque tabata"></button></div>
+      ${stepper(`tbo.${sel.id}`, 'Intro', 'sec', `de « ${esc(sel.title)} »`, 'small')}
       <div class="field"><span class="field-label">Bips de l'app<small>La musique donne déjà le rythme</small></span><button class="toggle ${c.beeps ? 'on' : ''}" data-action="toggle" data-path="tabata.beeps" aria-label="Bips de l'app"></button></div>
       <div class="summary"><span>Durée totale</span><b data-summary="tabata">${fmt(tabataDuration())}</b></div>
     </section>
@@ -1064,8 +1124,7 @@ function render() {
   $('#view').innerHTML = views[current]();
   // prépare le lecteur à l'avance pour que la musique parte dès « Démarrer »
   if (current === 'timer' && db.chronoMode === 'tabata') {
-    const vid = youtubeId(db.tabata.url);
-    if (vid) ensurePlayer(vid).catch(() => { });
+    ensurePlayer(trackForBlock(1).id).catch(() => { });
   }
 }
 
@@ -1082,6 +1141,8 @@ function refreshSummaries() {
   if (sr) sr.classList.toggle('disabled', db.pushup.sub <= 1);
   const tb = $('[data-field="tabata.between"]');
   if (tb) tb.classList.toggle('disabled', db.tabata.blocks <= 1);
+  const ch = $('[data-field="tabata.chain"]');
+  if (ch) ch.classList.toggle('disabled', db.tabata.blocks <= 1);
   if (current === 'timer') {
     const q = db.quick;
     $$('.chip[data-action="preset"]').forEach(c => c.classList.toggle('active', +c.dataset.w === q.work && +c.dataset.r === q.rest && +c.dataset.n === q.rounds));
@@ -1241,6 +1302,36 @@ const actions = {
   'simple-minus': () => simpleAdjust(-15),
   'simple-plus': () => simpleAdjust(15),
   'start-tabata': startTabata,
+  'tabata-track': (el, e) => {
+    if (e.target.closest('[data-action="tabata-del"]')) return;
+    db.tabata.track = el.dataset.id;
+    save();
+    render();
+  },
+  'tabata-del': async el => {
+    const t = trackOf(el.dataset.id);
+    if (!(await ask(`Retirer « ${t.title} » de la liste ?`, 'Retirer'))) return;
+    db.tabata.custom = db.tabata.custom.filter(x => x.id !== t.id);
+    delete db.tabata.offsets[t.id];
+    if (db.tabata.track === t.id) db.tabata.track = TABATA_TRACKS[0].id;
+    save(true);
+    render();
+  },
+  'tabata-add': async () => {
+    const id = youtubeId($('#tabata-url').value);
+    if (!id) return toast('Lien YouTube non reconnu');
+    if (!allTracks().some(x => x.id === id)) {
+      let title = 'Ma musique';
+      try {
+        const r = await fetch(`https://www.youtube.com/oembed?format=json&url=${encodeURIComponent('https://www.youtube.com/watch?v=' + id)}`);
+        if (r.ok) title = (await r.json()).title || title;
+      } catch (e) { /* titre par défaut */ }
+      db.tabata.custom.push({ id, title: title.slice(0, 60) });
+    }
+    db.tabata.track = id;
+    save(true);
+    render();
+  },
   'run-sync': () => run?.music && !run.finished && tabataSync(),
 
   'run-pause': () => {
@@ -1305,7 +1396,7 @@ const actions = {
     render();
     toast(`+${manualVal} pompes`);
   },
-  toggle: el => { const p = el.dataset.path; setPath(p, !getPath(p)); el.classList.toggle('on', getPath(p)); save(); },
+  toggle: el => { const p = el.dataset.path; setPath(p, !getPath(p)); el.classList.toggle('on', getPath(p)); save(); refreshSummaries(); },
   export: exportData,
   import: () => $('#import-file').click(),
   reset: async () => {
@@ -1332,13 +1423,6 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-document.addEventListener('change', e => {
-  if (e.target.id !== 'tabata-url') return;
-  db.tabata.url = e.target.value.trim();
-  save(true);
-  if (!youtubeId(db.tabata.url)) toast('Lien YouTube non reconnu');
-  render();
-});
 
 /* Hors ligne */
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {

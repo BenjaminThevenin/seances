@@ -1,5 +1,5 @@
 // Cache hors ligne. Changez VERSION à chaque mise à jour des fichiers.
-const VERSION = 'seances-v2';
+const VERSION = 'seances-v3';
 const ASSETS = [
   './',
   './index.html',
